@@ -177,11 +177,12 @@ public class Main {
 
             String title = fetchMovieTitle(imdbId);
 
-            String movieSql = "INSERT INTO movies (imdb_id, title) VALUES (?, ?) ON CONFLICT(imdb_id) DO UPDATE SET title = excluded.title";
+            String movieSql = "INSERT OR IGNORE INTO movies (imdb_id, title) VALUES (?, ?)";
+            int rowsAffected;
             try (PreparedStatement stmt = dbConnection.prepareStatement(movieSql)) {
                 stmt.setString(1, imdbId);
                 stmt.setString(2, title);
-                stmt.executeUpdate();
+                rowsAffected = stmt.executeUpdate();
             }
 
             String messageSql = "INSERT INTO messages (message_id, imdb_id) VALUES (?, ?)";
@@ -191,7 +192,11 @@ public class Main {
                 stmt.executeUpdate();
             }
 
-            IO.println("Successfully persisted movie: " + title + " (" + imdbId + ")");
+            if (rowsAffected == 0) {
+                IO.println("Movie already in database: " + title + " (" + imdbId + ")");
+            } else {
+                IO.println("Successfully persisted movie: " + title + " (" + imdbId + ")");
+            }
         } catch (Exception e) {
             handleException(e);
         }
@@ -217,7 +222,6 @@ public class Main {
         String userId = event.getUserId().asString();
 
         try {
-            // Get the imdb_id for this message
             String selectSql = "SELECT imdb_id FROM messages WHERE message_id = ?";
             String imdbId;
             try (PreparedStatement stmt = dbConnection.prepareStatement(selectSql)) {
@@ -230,7 +234,6 @@ public class Main {
                 imdbId = rs.getString("imdb_id");
             }
 
-            // Insert the like
             String insertSql = "INSERT INTO likes (imdb_id, user_id) VALUES (?, ?)";
             try (PreparedStatement stmt = dbConnection.prepareStatement(insertSql)) {
                 stmt.setString(1, imdbId);
@@ -240,10 +243,8 @@ public class Main {
 
             IO.println("Like added: user " + userId + " liked movie " + imdbId);
         } catch (SQLException e) {
-            // Handle duplicate likes gracefully (PRIMARY KEY constraint)
             if (e.getMessage().contains("UNIQUE constraint failed") ||
                 e.getMessage().contains("PRIMARY KEY")) {
-                // User already liked this movie, silently ignore
                 IO.println("User " + userId + " already liked movie (duplicate ignored)");
             } else {
                 handleException(e);
