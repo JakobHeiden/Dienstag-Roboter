@@ -6,7 +6,10 @@ import discord4j.core.DiscordClientBuilder;
 import discord4j.core.GatewayDiscordClient;
 import discord4j.core.event.domain.lifecycle.ReadyEvent;
 import discord4j.core.event.domain.message.MessageCreateEvent;
+import discord4j.core.event.domain.message.ReactionAddEvent;
+import discord4j.core.object.emoji.Emoji;
 import discord4j.core.object.entity.channel.MessageChannel;
+import discord4j.core.object.emoji.UnicodeEmoji;
 import reactor.core.publisher.Hooks;
 
 import java.io.IOException;
@@ -56,11 +59,10 @@ public class Main {
 
             stmt.execute("""
                     CREATE TABLE IF NOT EXISTS likes (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
                         imdb_id TEXT,
                         user_id TEXT,
-                        FOREIGN KEY (imdb_id) REFERENCES movies(imdb_id),
-                        UNIQUE(imdb_id, user_id)
+                        PRIMARY KEY (imdb_id, user_id),
+                        FOREIGN KEY (imdb_id) REFERENCES movies(imdb_id)
                     )
                     """);
         }
@@ -108,6 +110,11 @@ public class Main {
                 .filter(Main::isFilmeChannel)
                 .filter(Main::isImdbLink)
                 .subscribe(Main::persistMovie, Main::handleException);
+
+        discordClient.getEventDispatcher().on(ReactionAddEvent.class)
+                .filter(Main::isReactionInFilmeChannel)
+                .filter(Main::isThumbsUp)
+                .subscribe(Main::handleLikeReaction, Main::handleException);
 
         discordClient.onDisconnect().block();
     }
@@ -187,6 +194,60 @@ public class Main {
             IO.println("Successfully persisted movie: " + title + " (" + imdbId + ")");
         } catch (Exception e) {
             handleException(e);
+        }
+    }
+
+    private static boolean isReactionInFilmeChannel(ReactionAddEvent event) {
+        long channelId = event.getChannelId().asLong();
+        return channelId == filmeChannelId || channelId == testChannelId;
+    }
+
+    private static boolean isThumbsUp(ReactionAddEvent event) {
+        Emoji emoji = event.getEmoji();
+        if (emoji instanceof UnicodeEmoji unicodeEmoji) {
+            String raw = unicodeEmoji.getRaw();
+            // Match 👍 and all skin tone variants
+            return raw.startsWith("👍");
+        }
+        return false;
+    }
+
+    private static void handleLikeReaction(ReactionAddEvent event) {
+        String messageId = event.getMessageId().asString();
+        String userId = event.getUserId().asString();
+
+        try {
+            // Get the imdb_id for this message
+            String selectSql = "SELECT imdb_id FROM messages WHERE message_id = ?";
+            String imdbId;
+            try (PreparedStatement stmt = dbConnection.prepareStatement(selectSql)) {
+                stmt.setString(1, messageId);
+                var rs = stmt.executeQuery();
+                if (!rs.next()) {
+                    // Not a movie message, ignore silently
+                    return;
+                }
+                imdbId = rs.getString("imdb_id");
+            }
+
+            // Insert the like
+            String insertSql = "INSERT INTO likes (imdb_id, user_id) VALUES (?, ?)";
+            try (PreparedStatement stmt = dbConnection.prepareStatement(insertSql)) {
+                stmt.setString(1, imdbId);
+                stmt.setString(2, userId);
+                stmt.executeUpdate();
+            }
+
+            IO.println("Like added: user " + userId + " liked movie " + imdbId);
+        } catch (SQLException e) {
+            // Handle duplicate likes gracefully (PRIMARY KEY constraint)
+            if (e.getMessage().contains("UNIQUE constraint failed") ||
+                e.getMessage().contains("PRIMARY KEY")) {
+                // User already liked this movie, silently ignore
+                IO.println("User " + userId + " already liked movie (duplicate ignored)");
+            } else {
+                handleException(e);
+            }
         }
     }
 }
