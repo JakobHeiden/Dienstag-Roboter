@@ -7,6 +7,7 @@ import discord4j.core.GatewayDiscordClient;
 import discord4j.core.event.domain.lifecycle.ReadyEvent;
 import discord4j.core.event.domain.message.*;
 import discord4j.core.object.emoji.Emoji;
+import discord4j.core.object.entity.User;
 import discord4j.core.object.entity.channel.MessageChannel;
 import discord4j.core.object.emoji.UnicodeEmoji;
 import reactor.core.publisher.Hooks;
@@ -17,6 +18,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.sql.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.nio.file.Path;
@@ -24,7 +28,7 @@ import java.nio.file.Files;
 
 public class Main {
 
-    private static final long filmeChannelId = 1083096195825680505L;
+    private static final long movieChannelId = 1083096195825680505L;
     private static final long testChannelId = 1437574563528704101L;
     private static final String ownerMention = "<@622111772979101706>";
     private static String omdbApiKey;
@@ -86,7 +90,7 @@ public class Main {
         if (!Files.exists(dataDir)) {
             Files.createDirectories(dataDir);
         }
-        dbConnection = DriverManager.getConnection("jdbc:sqlite:data/filme.db");
+        dbConnection = DriverManager.getConnection("jdbc:sqlite:data/movies.db");
         initSchema();
 
         Hooks.onErrorDropped(Main::handleException);
@@ -102,17 +106,22 @@ public class Main {
                 });
 
         discordClient.getEventDispatcher().on(MessageCreateEvent.class)
-                .filter(Main::isFilmeChannel)
+                .filter(Main::isInFilmeChannel)
                 .filter(Main::isImdbLink)
                 .subscribe(Main::persistMovie, Main::handleException);
 
+        discordClient.getEventDispatcher().on(MessageCreateEvent.class)
+                .filter(Main::isInFilmeChannel)
+                .filter(Main::hasBotMention)
+                .subscribe(Main::suggestMovie, Main::handleException);
+
         discordClient.getEventDispatcher().on(ReactionAddEvent.class)
-                .filter(Main::isReactionInFilmeChannel)
+                .filter(Main::isReactionInMovieChannel)
                 .filter(Main::isThumbsUp)
                 .subscribe(Main::handleLikeReaction, Main::handleException);
 
         discordClient.getEventDispatcher().on(ReactionRemoveEvent.class)
-                .filter(Main::isReactionInFilmeChannel)
+                .filter(Main::isReactionInMovieChannel)
                 .filter(Main::isThumbsUp)
                 .subscribe(Main::handleUnlikeReaction, Main::handleException);
 
@@ -123,8 +132,14 @@ public class Main {
         return event.getMessage().getContent().toLowerCase().contains("imdb.com/title/tt");
     }
 
-    private static boolean isFilmeChannel(MessageCreateEvent event) {
-        return event.getMessage().getChannelId().asLong() == filmeChannelId || event.getMessage().getChannelId().asLong() == testChannelId;
+    private static boolean hasBotMention(MessageCreateEvent event) {
+        return event.getMessage().getUserMentions().stream()
+                .map(user -> user.getId())
+                .anyMatch(id -> id.equals(discordClient.getSelfId()));
+    }
+
+    private static boolean isInFilmeChannel(MessageCreateEvent event) {
+        return event.getMessage().getChannelId().asLong() == movieChannelId || event.getMessage().getChannelId().asLong() == testChannelId;
     }
 
     private static String fetchMovieTitle(String imdbId) throws IOException, InterruptedException {
@@ -160,7 +175,7 @@ public class Main {
         String errorMessage = throwable.getMessage();
         System.err.println(errorMessage);
 
-        discordClient.getChannelById(discord4j.common.util.Snowflake.of(filmeChannelId))
+        discordClient.getChannelById(discord4j.common.util.Snowflake.of(movieChannelId))
                 .ofType(MessageChannel.class)
                 .flatMap(channel -> channel.createMessage("⚠️ Error: " + errorMessage + " " + ownerMention))
                 .subscribe();
@@ -202,9 +217,59 @@ public class Main {
         }
     }
 
-    private static boolean isReactionInFilmeChannel(ReactionEvent event) {
+    private static void suggestMovie(MessageCreateEvent event) {
+        try {
+            List<String> mentionedUserIds = event.getMessage().getUserMentions()
+                    .stream().filter(user -> !user.isBot())
+                    .map(user -> user.getId().asString()).toList();
+
+            if (mentionedUserIds.isEmpty()) return;
+
+            String placeholders = String.join(",", mentionedUserIds.stream().map(id -> "?").toList());
+            String sql = """
+                    SELECT m.imdb_id, m.title, COUNT(l.user_id) as like_count
+                    FROM movies m
+                    JOIN likes l ON m.imdb_id = l.imdb_id
+                    WHERE l.user_id IN (%s) AND m.has_been_watched = 0
+                    GROUP BY m.imdb_id
+                    ORDER BY like_count DESC
+                    """.formatted(placeholders);
+
+            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(sql)) {
+                for (int i = 0; i < mentionedUserIds.size(); i++) {
+                    preparedStatement.setString(i + 1, mentionedUserIds.get(i));
+                }
+
+                ResultSet resultSet = preparedStatement.executeQuery();
+
+                if (!resultSet.next()) {
+                    IO.println("No movies to suggest");
+                    event.getMessage().getChannel().subscribe(messageChannel ->
+                            messageChannel.createMessage("No movies to suggest").subscribe());
+                    return;
+                }
+
+                List<String> movieTitles = new ArrayList<>(resultSet.getMetaData().getColumnCount());
+                movieTitles.add(resultSet.getString("title"));
+                int maxLikes = resultSet.getInt("like_count");
+                while (resultSet.next()) {
+                    if (resultSet.getInt("like_count") < maxLikes) break;
+
+                    movieTitles.add(resultSet.getString("title"));
+                }
+                Collections.shuffle(movieTitles);
+
+                MessageChannel channel = event.getMessage().getChannel().block();
+                movieTitles.forEach(movieTitle -> channel.createMessage(movieTitle).subscribe());
+            }
+        } catch (SQLException e) {
+            handleException(e);
+        }
+    }
+
+    private static boolean isReactionInMovieChannel(ReactionEvent event) {
         long channelId = event.getChannelId().asLong();
-        return channelId == filmeChannelId || channelId == testChannelId;
+        return channelId == movieChannelId || channelId == testChannelId;
     }
 
     private static boolean isThumbsUp(ReactionBaseEmojiEvent event) {
@@ -244,7 +309,7 @@ public class Main {
             IO.println("Like added: user " + userId + " liked movie " + imdbId);
         } catch (SQLException e) {
             if (e.getMessage().contains("UNIQUE constraint failed") ||
-                e.getMessage().contains("PRIMARY KEY")) {
+                    e.getMessage().contains("PRIMARY KEY")) {
                 IO.println("User " + userId + " already liked movie (duplicate ignored)");
             } else {
                 handleException(e);
