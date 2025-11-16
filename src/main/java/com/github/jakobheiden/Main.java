@@ -5,8 +5,7 @@ import com.google.gson.JsonParser;
 import discord4j.core.DiscordClientBuilder;
 import discord4j.core.GatewayDiscordClient;
 import discord4j.core.event.domain.lifecycle.ReadyEvent;
-import discord4j.core.event.domain.message.MessageCreateEvent;
-import discord4j.core.event.domain.message.ReactionAddEvent;
+import discord4j.core.event.domain.message.*;
 import discord4j.core.object.emoji.Emoji;
 import discord4j.core.object.entity.channel.MessageChannel;
 import discord4j.core.object.emoji.UnicodeEmoji;
@@ -17,11 +16,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
-import java.sql.Statement;
+import java.sql.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.nio.file.Path;
@@ -116,6 +111,11 @@ public class Main {
                 .filter(Main::isThumbsUp)
                 .subscribe(Main::handleLikeReaction, Main::handleException);
 
+        discordClient.getEventDispatcher().on(ReactionRemoveEvent.class)
+                .filter(Main::isReactionInFilmeChannel)
+                .filter(Main::isThumbsUp)
+                .subscribe(Main::handleUnlikeReaction, Main::handleException);
+
         discordClient.onDisconnect().block();
     }
 
@@ -202,12 +202,12 @@ public class Main {
         }
     }
 
-    private static boolean isReactionInFilmeChannel(ReactionAddEvent event) {
+    private static boolean isReactionInFilmeChannel(ReactionEvent event) {
         long channelId = event.getChannelId().asLong();
         return channelId == filmeChannelId || channelId == testChannelId;
     }
 
-    private static boolean isThumbsUp(ReactionAddEvent event) {
+    private static boolean isThumbsUp(ReactionBaseEmojiEvent event) {
         Emoji emoji = event.getEmoji();
         if (emoji instanceof UnicodeEmoji unicodeEmoji) {
             String raw = unicodeEmoji.getRaw();
@@ -224,21 +224,21 @@ public class Main {
         try {
             String selectSql = "SELECT imdb_id FROM messages WHERE message_id = ?";
             String imdbId;
-            try (PreparedStatement stmt = dbConnection.prepareStatement(selectSql)) {
-                stmt.setString(1, messageId);
-                var rs = stmt.executeQuery();
-                if (!rs.next()) {
+            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(selectSql)) {
+                preparedStatement.setString(1, messageId);
+                var resultSet = preparedStatement.executeQuery();
+                if (!resultSet.next()) {
                     // Not a movie message, ignore silently
                     return;
                 }
-                imdbId = rs.getString("imdb_id");
+                imdbId = resultSet.getString("imdb_id");
             }
 
             String insertSql = "INSERT INTO likes (imdb_id, user_id) VALUES (?, ?)";
-            try (PreparedStatement stmt = dbConnection.prepareStatement(insertSql)) {
-                stmt.setString(1, imdbId);
-                stmt.setString(2, userId);
-                stmt.executeUpdate();
+            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(insertSql)) {
+                preparedStatement.setString(1, imdbId);
+                preparedStatement.setString(2, userId);
+                preparedStatement.executeUpdate();
             }
 
             IO.println("Like added: user " + userId + " liked movie " + imdbId);
@@ -249,6 +249,41 @@ public class Main {
             } else {
                 handleException(e);
             }
+        }
+    }
+
+    private static void handleUnlikeReaction(ReactionRemoveEvent event) {
+        String messageId = event.getMessageId().asString();
+        String userId = event.getUserId().asString();
+
+        try {
+            String selectSql = "SELECT imdb_id FROM messages WHERE message_id = ?";
+            String imdbId;
+            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(selectSql)) {
+                preparedStatement.setString(1, messageId);
+                ResultSet resultSet = preparedStatement.executeQuery();
+                if (!resultSet.next()) {
+                    // Not a movie message, ignore silently
+                    return;
+                }
+                imdbId = resultSet.getString("imdb_id");
+            }
+
+            String deleteSql = "DELETE FROM likes WHERE imdb_id = ? AND user_id = ?";
+            int rowsAffected;
+            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(deleteSql)) {
+                preparedStatement.setString(1, imdbId);
+                preparedStatement.setString(2, userId);
+                rowsAffected = preparedStatement.executeUpdate();
+            }
+
+            if (rowsAffected == 0) {
+                IO.println("No like to remove: user " + userId + " had not liked movie " + imdbId);
+            } else {
+                IO.println("Like removed: user " + userId + " unliked movie " + imdbId);
+            }
+        } catch (SQLException e) {
+            handleException(e);
         }
     }
 }
