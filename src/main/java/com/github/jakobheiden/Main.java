@@ -2,11 +2,14 @@ package com.github.jakobheiden;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import discord4j.common.util.Snowflake;
 import discord4j.core.DiscordClientBuilder;
 import discord4j.core.GatewayDiscordClient;
 import discord4j.core.event.domain.lifecycle.ReadyEvent;
 import discord4j.core.event.domain.message.*;
 import discord4j.core.object.emoji.Emoji;
+import discord4j.core.object.entity.Message;
+import discord4j.core.object.entity.User;
 import discord4j.core.object.entity.channel.MessageChannel;
 import discord4j.core.object.emoji.UnicodeEmoji;
 import reactor.core.publisher.Hooks;
@@ -20,6 +23,7 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.nio.file.Path;
@@ -30,6 +34,7 @@ public class Main {
     private static final long movieChannelId = 1083096195825680505L;
     private static final long testChannelId = 1437574563528704101L;
     private static final String ownerMention = "<@622111772979101706>";
+    private static final UnicodeEmoji eyesEmoji = UnicodeEmoji.of("\uD83D\uDC40");
     private static String omdbApiKey;
     private static final String OMDB_API_URL_TEMPLATE = "https://www.omdbapi.com/?apikey=%s&i=%s";
     private static GatewayDiscordClient discordClient;
@@ -85,6 +90,9 @@ public class Main {
                 .filter(Main::hasBotMention)
                 .subscribe(Main::suggestMovie, Main::handleException);
 
+        discordClient.getEventDispatcher().on(MessageCreateEvent.class)
+                .filter(Main::isBotMessage);
+
         discordClient.getEventDispatcher().on(ReactionAddEvent.class)
                 .filter(Main::isReactionInMovieChannel)
                 .filter(Main::isThumbsUp)
@@ -138,7 +146,7 @@ public class Main {
 
     private static boolean hasBotMention(MessageCreateEvent event) {
         return event.getMessage().getUserMentions().stream()
-                .map(user -> user.getId())
+                .map(User::getId)
                 .anyMatch(id -> id.equals(discordClient.getSelfId()));
     }
 
@@ -146,8 +154,12 @@ public class Main {
         return event.getMessage().getChannelId().asLong() == movieChannelId || event.getMessage().getChannelId().asLong() == testChannelId;
     }
 
+    private static boolean isBotMessage(MessageCreateEvent event) {
+        return event.getMessage().getAuthor().map(user -> user.getId().equals(discordClient.getSelfId())).orElse(false);
+    }
+
     private static boolean isEyesEmoji(ReactionAddEvent event) {
-        return event.getEmoji().asFormat().equals("\uD83D\uDC40");
+        return event.getEmoji().equals(eyesEmoji);
     }
 
     private static boolean isThumbsUp(ReactionBaseEmojiEvent event) {
@@ -273,14 +285,42 @@ public class Main {
                 Collections.shuffle(movieTitles);
 
                 MessageChannel channel = event.getMessage().getChannel().block();
-                movieTitles.forEach(movieTitle -> channel.createMessage(movieTitle).subscribe());
+                movieTitles.forEach(movieTitle -> channel.createMessage(movieTitle)
+                        .map(Message::getId)
+                        .map(Snowflake::asString)
+                        .subscribe(messageID -> persistMessageForMovie(messageID, movieTitle), Main::handleException));
             }
-        } catch (SQLException e) {
+        } catch (Exception e) {
             handleException(e);
         }
     }
 
-   private static void handleLikeReaction(ReactionAddEvent event) {
+    private static void persistMessageForMovie(String messageId, String movieTitle) {
+        try {
+            String findMovieIdSql = "SELECT imdb_id FROM movies WHERE title = ?";
+            String imdbId;
+            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(findMovieIdSql)) {
+                preparedStatement.setString(1, movieTitle);
+                ResultSet resultSet = preparedStatement.executeQuery();
+                if (!resultSet.next()) throw new SQLException("Movie not found in database: " + movieTitle);
+
+                imdbId = resultSet.getString("imdb_id");
+            }
+
+            String messageSql = "INSERT INTO messages (message_id, imdb_id) VALUES (?, ?)";
+            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(messageSql)) {
+                preparedStatement.setString(1, messageId);
+                preparedStatement.setString(2, imdbId);
+                preparedStatement.executeUpdate();
+            }
+
+            IO.println("Persisted movie message: " + messageId + " (" + movieTitle + ")");
+        } catch (Exception e) {
+            handleException(e);
+        }
+    }
+
+    private static void handleLikeReaction(ReactionAddEvent event) {
         String messageId = event.getMessageId().asString();
         String userId = event.getUserId().asString();
 
@@ -359,18 +399,38 @@ public class Main {
                 preparedStatement.setString(1, messageId);
                 ResultSet resultSet = preparedStatement.executeQuery();
                 if (!resultSet.next()) {
-                    // Not a movie message, ignore silently
+                    IO.println("Not a movie message: " + messageId);
                     return;
                 }
+
                 imdbId = resultSet.getString("imdb_id");
             }
 
-            String updateSql = "UPDATE movies SET has_been_watched = 1 WHERE imdb_id = ?";
+            String updateSql = "UPDATE movies SET has_been_watched = 1 WHERE imdb_id = ? AND has_been_watched = 0";
+            int affectedRows;
             try (PreparedStatement preparedStatement = dbConnection.prepareStatement(updateSql)) {
                 preparedStatement.setString(1, imdbId);
+                affectedRows = preparedStatement.executeUpdate();
+            }
+            if (affectedRows == 0) {
+                IO.println("Movie already marked as seen: " + imdbId);
+                return;
             }
 
             IO.println("Movie marked as seen: " + imdbId);
+
+            String findMessagesForMovieSql = "SELECT message_id FROM messages WHERE imdb_id = ?";
+            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(findMessagesForMovieSql)) {
+                preparedStatement.setString(1, imdbId);
+                ResultSet resultSet = preparedStatement.executeQuery();
+                while (resultSet.next()) {
+                    String messageToMarkId = resultSet.getString("message_id");
+                    discordClient.getChannelById(Snowflake.of(movieChannelId))
+                            .ofType(MessageChannel.class)
+                            .flatMap(channel -> channel.getMessageById(discord4j.common.util.Snowflake.of(messageToMarkId)))
+                            .subscribe(message -> message.addReaction(eyesEmoji).subscribe());
+                }
+            }
         } catch (SQLException e) {
             handleException(e);
         }
