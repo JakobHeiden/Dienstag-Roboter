@@ -125,6 +125,11 @@ public class Main {
                 .filter(Main::isThumbsUp)
                 .subscribe(Main::handleUnlikeReaction, Main::handleException);
 
+        discordClient.getEventDispatcher().on(ReactionAddEvent.class)
+                .filter(Main::isReactionInMovieChannel)
+                .filter(Main::isEyesEmoji)
+                .subscribe(Main::handleMarkMovieAsSeenReaction, Main::handleException);
+
         discordClient.onDisconnect().block();
     }
 
@@ -282,6 +287,10 @@ public class Main {
         return false;
     }
 
+    private static boolean isEyesEmoji(ReactionAddEvent event) {
+        return event.getEmoji().asFormat().equals("\uD83D\uDC40");
+    }
+
     private static void handleLikeReaction(ReactionAddEvent event) {
         String messageId = event.getMessageId().asString();
         String userId = event.getUserId().asString();
@@ -347,6 +356,33 @@ public class Main {
             } else {
                 IO.println("Like removed: user " + userId + " unliked movie " + imdbId);
             }
+        } catch (SQLException e) {
+            handleException(e);
+        }
+    }
+
+    private static void handleMarkMovieAsSeenReaction(ReactionAddEvent event) {
+        String messageId = event.getMessageId().asString();
+
+        try {
+            String selectSql = "SELECT imdb_id FROM messages WHERE message_id = ?";
+            String imdbId;
+            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(selectSql)) {
+                preparedStatement.setString(1, messageId);
+                ResultSet resultSet = preparedStatement.executeQuery();
+                if (!resultSet.next()) {
+                    // Not a movie message, ignore silently
+                    return;
+                }
+                imdbId = resultSet.getString("imdb_id");
+            }
+
+            String updateSql = "UPDATE movies SET has_been_watched = 1 WHERE imdb_id = ?";
+            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(updateSql)) {
+                preparedStatement.setString(1, imdbId);
+            }
+
+            IO.println("Movie marked as seen: " + imdbId);
         } catch (SQLException e) {
             handleException(e);
         }
