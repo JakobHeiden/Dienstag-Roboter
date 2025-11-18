@@ -7,7 +7,6 @@ import discord4j.core.GatewayDiscordClient;
 import discord4j.core.event.domain.lifecycle.ReadyEvent;
 import discord4j.core.event.domain.message.*;
 import discord4j.core.object.emoji.Emoji;
-import discord4j.core.object.entity.User;
 import discord4j.core.object.entity.channel.MessageChannel;
 import discord4j.core.object.emoji.UnicodeEmoji;
 import reactor.core.publisher.Hooks;
@@ -37,35 +36,6 @@ public class Main {
     private static final HttpClient httpClient = HttpClient.newHttpClient();
     private static final Pattern IMDB_ID_PATTERN = Pattern.compile("imdb\\.com/title/(tt\\d+)", Pattern.CASE_INSENSITIVE);
     private static Connection dbConnection;
-
-    private static void initSchema() throws SQLException {
-        try (Statement stmt = dbConnection.createStatement()) {
-            stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS movies (
-                        imdb_id TEXT PRIMARY KEY,
-                        title TEXT,
-                        has_been_watched BOOLEAN DEFAULT 0
-                    )
-                    """);
-
-            stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS messages (
-                        message_id TEXT PRIMARY KEY,
-                        imdb_id TEXT,
-                        FOREIGN KEY (imdb_id) REFERENCES movies(imdb_id)
-                    )
-                    """);
-
-            stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS likes (
-                        imdb_id TEXT,
-                        user_id TEXT,
-                        PRIMARY KEY (imdb_id, user_id),
-                        FOREIGN KEY (imdb_id) REFERENCES movies(imdb_id)
-                    )
-                    """);
-        }
-    }
 
     static void main() throws Exception {
         String token = System.getenv("DISCORD_BOT_TOKEN");
@@ -133,6 +103,35 @@ public class Main {
         discordClient.onDisconnect().block();
     }
 
+    private static void initSchema() throws SQLException {
+        try (Statement stmt = dbConnection.createStatement()) {
+            stmt.execute("""
+                    CREATE TABLE IF NOT EXISTS movies (
+                        imdb_id TEXT PRIMARY KEY,
+                        title TEXT,
+                        has_been_watched BOOLEAN DEFAULT 0
+                    )
+                    """);
+
+            stmt.execute("""
+                    CREATE TABLE IF NOT EXISTS messages (
+                        message_id TEXT PRIMARY KEY,
+                        imdb_id TEXT,
+                        FOREIGN KEY (imdb_id) REFERENCES movies(imdb_id)
+                    )
+                    """);
+
+            stmt.execute("""
+                    CREATE TABLE IF NOT EXISTS likes (
+                        imdb_id TEXT,
+                        user_id TEXT,
+                        PRIMARY KEY (imdb_id, user_id),
+                        FOREIGN KEY (imdb_id) REFERENCES movies(imdb_id)
+                    )
+                    """);
+        }
+    }
+
     private static boolean isImdbLink(MessageCreateEvent event) {
         return event.getMessage().getContent().toLowerCase().contains("imdb.com/title/tt");
     }
@@ -145,6 +144,25 @@ public class Main {
 
     private static boolean isInFilmeChannel(MessageCreateEvent event) {
         return event.getMessage().getChannelId().asLong() == movieChannelId || event.getMessage().getChannelId().asLong() == testChannelId;
+    }
+
+    private static boolean isEyesEmoji(ReactionAddEvent event) {
+        return event.getEmoji().asFormat().equals("\uD83D\uDC40");
+    }
+
+    private static boolean isThumbsUp(ReactionBaseEmojiEvent event) {
+        Emoji emoji = event.getEmoji();
+        if (emoji instanceof UnicodeEmoji unicodeEmoji) {
+            String raw = unicodeEmoji.getRaw();
+            // Match 👍 and all skin tone variants
+            return raw.startsWith("👍");
+        }
+        return false;
+    }
+
+    private static boolean isReactionInMovieChannel(ReactionEvent event) {
+        long channelId = event.getChannelId().asLong();
+        return channelId == movieChannelId || channelId == testChannelId;
     }
 
     private static String fetchMovieTitle(String imdbId) throws IOException, InterruptedException {
@@ -174,16 +192,6 @@ public class Main {
             return matcher.group(1);
         }
         return null;
-    }
-
-    private static void handleException(Throwable throwable) {
-        String errorMessage = throwable.getMessage();
-        System.err.println(errorMessage);
-
-        discordClient.getChannelById(discord4j.common.util.Snowflake.of(movieChannelId))
-                .ofType(MessageChannel.class)
-                .flatMap(channel -> channel.createMessage("⚠️ Error: " + errorMessage + " " + ownerMention))
-                .subscribe();
     }
 
     private static void persistMovie(MessageCreateEvent event) {
@@ -272,26 +280,7 @@ public class Main {
         }
     }
 
-    private static boolean isReactionInMovieChannel(ReactionEvent event) {
-        long channelId = event.getChannelId().asLong();
-        return channelId == movieChannelId || channelId == testChannelId;
-    }
-
-    private static boolean isThumbsUp(ReactionBaseEmojiEvent event) {
-        Emoji emoji = event.getEmoji();
-        if (emoji instanceof UnicodeEmoji unicodeEmoji) {
-            String raw = unicodeEmoji.getRaw();
-            // Match 👍 and all skin tone variants
-            return raw.startsWith("👍");
-        }
-        return false;
-    }
-
-    private static boolean isEyesEmoji(ReactionAddEvent event) {
-        return event.getEmoji().asFormat().equals("\uD83D\uDC40");
-    }
-
-    private static void handleLikeReaction(ReactionAddEvent event) {
+   private static void handleLikeReaction(ReactionAddEvent event) {
         String messageId = event.getMessageId().asString();
         String userId = event.getUserId().asString();
 
@@ -363,7 +352,6 @@ public class Main {
 
     private static void handleMarkMovieAsSeenReaction(ReactionAddEvent event) {
         String messageId = event.getMessageId().asString();
-
         try {
             String selectSql = "SELECT imdb_id FROM messages WHERE message_id = ?";
             String imdbId;
@@ -386,5 +374,15 @@ public class Main {
         } catch (SQLException e) {
             handleException(e);
         }
+    }
+
+    private static void handleException(Throwable throwable) {
+        String errorMessage = throwable.getMessage();
+        System.err.println(errorMessage);
+
+        discordClient.getChannelById(discord4j.common.util.Snowflake.of(movieChannelId))
+                .ofType(MessageChannel.class)
+                .flatMap(channel -> channel.createMessage("⚠️ Error: " + errorMessage + " " + ownerMention))
+                .subscribe();
     }
 }
