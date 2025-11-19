@@ -23,7 +23,6 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.nio.file.Path;
@@ -232,6 +231,9 @@ public class Main {
                 stmt.executeUpdate();
             }
 
+            String authorId = event.getMessage().getAuthor().get().getId().asString();
+            persistLike(messageId, authorId);
+
             if (rowsAffected == 0) {
                 IO.println("Movie already in database: " + title + " (" + imdbId + ")");
             } else {
@@ -323,7 +325,10 @@ public class Main {
     private static void handleLikeReaction(ReactionAddEvent event) {
         String messageId = event.getMessageId().asString();
         String userId = event.getUserId().asString();
+        persistLike(messageId, userId);
+    }
 
+    private static void persistLike(String messageId, String userId) {
         try {
             String selectSql = "SELECT imdb_id FROM messages WHERE message_id = ?";
             String imdbId;
