@@ -23,6 +23,7 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.nio.file.Path;
@@ -39,7 +40,7 @@ public class Main {
     private static GatewayDiscordClient discordClient;
     private static final HttpClient httpClient = HttpClient.newHttpClient();
     private static final Pattern IMDB_ID_PATTERN = Pattern.compile("imdb\\.com/title/(tt\\d+)", Pattern.CASE_INSENSITIVE);
-    private static Connection dbConnection;
+    private static MovieRepository movieRepository;
 
     static void main() throws Exception {
         String token = System.getenv("DISCORD_BOT_TOKEN");
@@ -54,18 +55,21 @@ public class Main {
             System.exit(1);
         }
 
+        Path dataDir = Path.of("data");
+        if (!Files.exists(dataDir)) {
+            Files.createDirectories(dataDir);
+        }
+        Connection dbConnection = DriverManager.getConnection("jdbc:sqlite:data/movies.db");
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
                 dbConnection.close();
             } catch (SQLException _) {
             }
         }));
-        Path dataDir = Path.of("data");
-        if (!Files.exists(dataDir)) {
-            Files.createDirectories(dataDir);
-        }
-        dbConnection = DriverManager.getConnection("jdbc:sqlite:data/movies.db");
-        initSchema();
+
+        movieRepository = new MovieRepository(dbConnection);
+        movieRepository.initSchema();
 
         Hooks.onErrorDropped(Main::handleException);
 
@@ -108,35 +112,6 @@ public class Main {
                 .subscribe(Main::handleMarkMovieAsSeenReaction, Main::handleException);
 
         discordClient.onDisconnect().block();
-    }
-
-    private static void initSchema() throws SQLException {
-        try (Statement stmt = dbConnection.createStatement()) {
-            stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS movies (
-                        imdb_id TEXT PRIMARY KEY,
-                        title TEXT,
-                        has_been_watched BOOLEAN DEFAULT 0
-                    )
-                    """);
-
-            stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS messages (
-                        message_id TEXT PRIMARY KEY,
-                        imdb_id TEXT,
-                        FOREIGN KEY (imdb_id) REFERENCES movies(imdb_id)
-                    )
-                    """);
-
-            stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS likes (
-                        imdb_id TEXT,
-                        user_id TEXT,
-                        PRIMARY KEY (imdb_id, user_id),
-                        FOREIGN KEY (imdb_id) REFERENCES movies(imdb_id)
-                    )
-                    """);
-        }
     }
 
     private static boolean isImdbLink(MessageCreateEvent event) {
@@ -216,28 +191,16 @@ public class Main {
 
             String title = fetchMovieTitle(imdbId);
 
-            String movieSql = "INSERT OR IGNORE INTO movies (imdb_id, title) VALUES (?, ?)";
-            int rowsAffected;
-            try (PreparedStatement stmt = dbConnection.prepareStatement(movieSql)) {
-                stmt.setString(1, imdbId);
-                stmt.setString(2, title);
-                rowsAffected = stmt.executeUpdate();
-            }
-
-            String messageSql = "INSERT INTO messages (message_id, imdb_id) VALUES (?, ?)";
-            try (PreparedStatement stmt = dbConnection.prepareStatement(messageSql)) {
-                stmt.setString(1, messageId);
-                stmt.setString(2, imdbId);
-                stmt.executeUpdate();
-            }
+            boolean inserted = movieRepository.insertMovie(imdbId, title);
+            movieRepository.insertMessage(messageId, imdbId);
 
             String authorId = event.getMessage().getAuthor().get().getId().asString();
             persistLike(messageId, authorId);
 
-            if (rowsAffected == 0) {
-                IO.println("Movie already in database: " + title + " (" + imdbId + ")");
-            } else {
+            if (inserted) {
                 IO.println("Successfully persisted movie: " + title + " (" + imdbId + ")");
+            } else {
+                IO.println("Movie already in database: " + title + " (" + imdbId + ")");
             }
         } catch (Exception e) {
             handleException(e);
@@ -252,46 +215,28 @@ public class Main {
 
             if (mentionedUserIds.isEmpty()) return;
 
-            String placeholders = String.join(",", mentionedUserIds.stream().map(id -> "?").toList());
-            String sql = """
-                    SELECT m.imdb_id, m.title, COUNT(l.user_id) as like_count
-                    FROM movies m
-                    JOIN likes l ON m.imdb_id = l.imdb_id
-                    WHERE l.user_id IN (%s) AND m.has_been_watched = 0
-                    GROUP BY m.imdb_id
-                    ORDER BY like_count DESC
-                    """.formatted(placeholders);
+            List<MovieRepository.MovieSuggestion> suggestions = movieRepository.getSuggestedMovies(mentionedUserIds);
 
-            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(sql)) {
-                for (int i = 0; i < mentionedUserIds.size(); i++) {
-                    preparedStatement.setString(i + 1, mentionedUserIds.get(i));
-                }
-
-                ResultSet resultSet = preparedStatement.executeQuery();
-
-                if (!resultSet.next()) {
-                    IO.println("No movies to suggest");
-                    event.getMessage().getChannel().subscribe(messageChannel ->
-                            messageChannel.createMessage("No movies to suggest").subscribe());
-                    return;
-                }
-
-                List<String> movieTitles = new ArrayList<>(resultSet.getMetaData().getColumnCount());
-                movieTitles.add(resultSet.getString("title"));
-                int maxLikes = resultSet.getInt("like_count");
-                while (resultSet.next()) {
-                    if (resultSet.getInt("like_count") < maxLikes) break;
-
-                    movieTitles.add(resultSet.getString("title"));
-                }
-                Collections.shuffle(movieTitles);
-
-                MessageChannel channel = event.getMessage().getChannel().block();
-                movieTitles.forEach(movieTitle -> channel.createMessage(movieTitle)
-                        .map(Message::getId)
-                        .map(Snowflake::asString)
-                        .subscribe(messageID -> persistMessageForMovie(messageID, movieTitle), Main::handleException));
+            if (suggestions.isEmpty()) {
+                IO.println("No movies to suggest");
+                event.getMessage().getChannel().subscribe(messageChannel ->
+                        messageChannel.createMessage("No movies to suggest").subscribe());
+                return;
             }
+
+            List<String> movieTitles = new ArrayList<>();
+            int maxLikes = suggestions.get(0).likeCount();
+            for (MovieRepository.MovieSuggestion suggestion : suggestions) {
+                if (suggestion.likeCount() < maxLikes) break;
+                movieTitles.add(suggestion.title());
+            }
+            Collections.shuffle(movieTitles);
+
+            MessageChannel channel = event.getMessage().getChannel().block();
+            movieTitles.forEach(movieTitle -> channel.createMessage(movieTitle)
+                    .map(Message::getId)
+                    .map(Snowflake::asString)
+                    .subscribe(messageID -> persistMessageForMovie(messageID, movieTitle), Main::handleException));
         } catch (Exception e) {
             handleException(e);
         }
@@ -299,23 +244,12 @@ public class Main {
 
     private static void persistMessageForMovie(String messageId, String movieTitle) {
         try {
-            String findMovieIdSql = "SELECT imdb_id FROM movies WHERE title = ?";
-            String imdbId;
-            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(findMovieIdSql)) {
-                preparedStatement.setString(1, movieTitle);
-                ResultSet resultSet = preparedStatement.executeQuery();
-                if (!resultSet.next()) throw new SQLException("Movie not found in database: " + movieTitle);
-
-                imdbId = resultSet.getString("imdb_id");
+            Optional<String> imdbId = movieRepository.getImdbIdByTitle(movieTitle);
+            if (imdbId.isEmpty()) {
+                throw new SQLException("Movie not found in database: " + movieTitle);
             }
 
-            String messageSql = "INSERT INTO messages (message_id, imdb_id) VALUES (?, ?)";
-            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(messageSql)) {
-                preparedStatement.setString(1, messageId);
-                preparedStatement.setString(2, imdbId);
-                preparedStatement.executeUpdate();
-            }
-
+            movieRepository.insertMessage(messageId, imdbId.get());
             IO.println("Persisted movie message: " + messageId + " (" + movieTitle + ")");
         } catch (Exception e) {
             handleException(e);
@@ -330,33 +264,19 @@ public class Main {
 
     private static void persistLike(String messageId, String userId) {
         try {
-            String selectSql = "SELECT imdb_id FROM messages WHERE message_id = ?";
-            String imdbId;
-            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(selectSql)) {
-                preparedStatement.setString(1, messageId);
-                var resultSet = preparedStatement.executeQuery();
-                if (!resultSet.next()) {
-                    // Not a movie message, ignore silently
-                    return;
-                }
-                imdbId = resultSet.getString("imdb_id");
+            Optional<String> imdbId = movieRepository.getImdbIdForMessage(messageId);
+            if (imdbId.isEmpty()) {
+                return;
             }
 
-            String insertSql = "INSERT INTO likes (imdb_id, user_id) VALUES (?, ?)";
-            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(insertSql)) {
-                preparedStatement.setString(1, imdbId);
-                preparedStatement.setString(2, userId);
-                preparedStatement.executeUpdate();
-            }
-
-            IO.println("Like added: user " + userId + " liked movie " + imdbId);
-        } catch (SQLException e) {
-            if (e.getMessage().contains("UNIQUE constraint failed") ||
-                    e.getMessage().contains("PRIMARY KEY")) {
-                IO.println("User " + userId + " already liked movie (duplicate ignored)");
+            boolean added = movieRepository.addLike(imdbId.get(), userId);
+            if (added) {
+                IO.println("Like added: user " + userId + " liked movie " + imdbId.get());
             } else {
-                handleException(e);
+                IO.println("User " + userId + " already liked movie (duplicate ignored)");
             }
+        } catch (SQLException e) {
+            handleException(e);
         }
     }
 
@@ -365,30 +285,16 @@ public class Main {
         String userId = event.getUserId().asString();
 
         try {
-            String selectSql = "SELECT imdb_id FROM messages WHERE message_id = ?";
-            String imdbId;
-            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(selectSql)) {
-                preparedStatement.setString(1, messageId);
-                ResultSet resultSet = preparedStatement.executeQuery();
-                if (!resultSet.next()) {
-                    // Not a movie message, ignore silently
-                    return;
-                }
-                imdbId = resultSet.getString("imdb_id");
+            Optional<String> imdbId = movieRepository.getImdbIdForMessage(messageId);
+            if (imdbId.isEmpty()) {
+                return;
             }
 
-            String deleteSql = "DELETE FROM likes WHERE imdb_id = ? AND user_id = ?";
-            int rowsAffected;
-            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(deleteSql)) {
-                preparedStatement.setString(1, imdbId);
-                preparedStatement.setString(2, userId);
-                rowsAffected = preparedStatement.executeUpdate();
-            }
-
-            if (rowsAffected == 0) {
-                IO.println("No like to remove: user " + userId + " had not liked movie " + imdbId);
+            boolean removed = movieRepository.removeLike(imdbId.get(), userId);
+            if (removed) {
+                IO.println("Like removed: user " + userId + " unliked movie " + imdbId.get());
             } else {
-                IO.println("Like removed: user " + userId + " unliked movie " + imdbId);
+                IO.println("No like to remove: user " + userId + " had not liked movie " + imdbId.get());
             }
         } catch (SQLException e) {
             handleException(e);
@@ -398,43 +304,26 @@ public class Main {
     private static void handleMarkMovieAsSeenReaction(ReactionAddEvent event) {
         String messageId = event.getMessageId().asString();
         try {
-            String selectSql = "SELECT imdb_id FROM messages WHERE message_id = ?";
-            String imdbId;
-            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(selectSql)) {
-                preparedStatement.setString(1, messageId);
-                ResultSet resultSet = preparedStatement.executeQuery();
-                if (!resultSet.next()) {
-                    IO.println("Not a movie message: " + messageId);
-                    return;
-                }
-
-                imdbId = resultSet.getString("imdb_id");
-            }
-
-            String updateSql = "UPDATE movies SET has_been_watched = 1 WHERE imdb_id = ? AND has_been_watched = 0";
-            int affectedRows;
-            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(updateSql)) {
-                preparedStatement.setString(1, imdbId);
-                affectedRows = preparedStatement.executeUpdate();
-            }
-            if (affectedRows == 0) {
-                IO.println("Movie already marked as seen: " + imdbId);
+            Optional<String> imdbId = movieRepository.getImdbIdForMessage(messageId);
+            if (imdbId.isEmpty()) {
+                IO.println("Not a movie message: " + messageId);
                 return;
             }
 
-            IO.println("Movie marked as seen: " + imdbId);
+            boolean marked = movieRepository.wasMovieMarked(imdbId.get());
+            if (!marked) {
+                IO.println("Movie already marked as seen: " + imdbId.get());
+                return;
+            }
 
-            String findMessagesForMovieSql = "SELECT message_id FROM messages WHERE imdb_id = ?";
-            try (PreparedStatement preparedStatement = dbConnection.prepareStatement(findMessagesForMovieSql)) {
-                preparedStatement.setString(1, imdbId);
-                ResultSet resultSet = preparedStatement.executeQuery();
-                while (resultSet.next()) {
-                    String messageToMarkId = resultSet.getString("message_id");
-                    discordClient.getChannelById(Snowflake.of(movieChannelId))
-                            .ofType(MessageChannel.class)
-                            .flatMap(channel -> channel.getMessageById(discord4j.common.util.Snowflake.of(messageToMarkId)))
-                            .subscribe(message -> message.addReaction(eyesEmoji).subscribe());
-                }
+            IO.println("Movie marked as seen: " + imdbId.get());
+
+            List<String> messageIds = movieRepository.getMessageIdsForMovie(imdbId.get());
+            for (String messageToMarkId : messageIds) {
+                discordClient.getChannelById(Snowflake.of(movieChannelId))
+                        .ofType(MessageChannel.class)
+                        .flatMap(channel -> channel.getMessageById(discord4j.common.util.Snowflake.of(messageToMarkId)))
+                        .subscribe(message -> message.addReaction(eyesEmoji).subscribe());
             }
         } catch (SQLException e) {
             handleException(e);
