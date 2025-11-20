@@ -232,8 +232,18 @@ public class Main {
             } else {
                 IO.println("Successfully persisted movie: " + title + " (" + imdbId + ")");
             }
+
+            replaceImdbLinkWithShareImdbLink(event.getMessage());
         } catch (Exception e) {
             handleException(e);
+        }
+    }
+
+    private static void replaceImdbLinkWithShareImdbLink(Message message) {
+        String messageContent = message.getContent();
+        String newContent = messageContent.replaceAll("(?i)imdb\\.com", "shareimdb.com");
+        if (!newContent.equals(messageContent)) {
+            message.edit().withContentOrNull(newContent).subscribe();
         }
     }
 
