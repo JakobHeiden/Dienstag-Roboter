@@ -89,9 +89,6 @@ public class Main {
                 .filter(Main::hasBotMention)
                 .subscribe(Main::suggestMovie, Main::handleException);
 
-        discordClient.getEventDispatcher().on(MessageCreateEvent.class)
-                .filter(Main::isBotMessage);
-
         discordClient.getEventDispatcher().on(ReactionAddEvent.class)
                 .filter(Main::isReactionInMovieChannel)
                 .filter(Main::isThumbsUp)
@@ -151,10 +148,6 @@ public class Main {
 
     private static boolean isInFilmeChannel(MessageCreateEvent event) {
         return event.getMessage().getChannelId().asLong() == movieChannelId || event.getMessage().getChannelId().asLong() == testChannelId;
-    }
-
-    private static boolean isBotMessage(MessageCreateEvent event) {
-        return event.getMessage().getAuthor().map(user -> user.getId().equals(discordClient.getSelfId())).orElse(false);
     }
 
     private static boolean isEyesEmoji(ReactionAddEvent event) {
