@@ -36,6 +36,7 @@ public class App {
     private final String ownerMention;
     private final Snowflake botSnowflake;
     private static final UnicodeEmoji eyesEmoji = UnicodeEmoji.of("\uD83D\uDC40");
+    private static final UnicodeEmoji thumbsUpEmoji = UnicodeEmoji.of("\uD83D\uDC4D");
     private static final String OMDB_API_URL_TEMPLATE = "https://www.omdbapi.com/?apikey=%s&i=%s";
     private static final Pattern IMDB_ID_PATTERN = Pattern.compile("imdb\\.com/title/(tt\\d+)", Pattern.CASE_INSENSITIVE);
 
@@ -103,6 +104,7 @@ public class App {
 
         discordClient.getEventDispatcher().on(ReactionAddEvent.class)
                 .filter(this::isReactionInMovieChannel)
+                .filter(event -> !event.getMember().get().isBot())
                 .filter(App::isThumbsUp)
                 .map(event -> {
                     try {
@@ -233,6 +235,7 @@ public class App {
         } else {
             IO.println("Successfully persisted movie: " + title + " (" + imdbId + ")");
         }
+        event.getMessage().addReaction(thumbsUpEmoji).subscribe();
     }
 
     private void suggestMovie(MessageCreateEvent event) throws SQLException {
