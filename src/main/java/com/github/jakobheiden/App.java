@@ -242,37 +242,23 @@ public class App {
 
         if (mentionedUserIds.isEmpty()) return;
 
-        ResultSet resultSet = movieRepository.fetchLikeCounts(mentionedUserIds);
+        MovieRepository.MovieSuggestions movieSuggestions = movieRepository.fetchMovieSuggestions(mentionedUserIds);
 
-        if (!resultSet.next()) {
+        if (movieSuggestions.likeCount() == 0) {
             IO.println("No movies to suggest");
             event.getMessage().getChannel().subscribe(messageChannel ->
                     messageChannel.createMessage("No movies to suggest").subscribe());
             return;
         }
 
-        List<String> movieTitles = new ArrayList<>(resultSet.getMetaData().getColumnCount());
-        movieTitles.add(resultSet.getString("title"));
-        int maxLikes = resultSet.getInt("like_count");
-        while (resultSet.next()) {
-            if (resultSet.getInt("like_count") < maxLikes) break;
-
-            movieTitles.add(resultSet.getString("title"));
-        }
-        Collections.shuffle(movieTitles);
+        Collections.shuffle(movieSuggestions.movieTitles());
+        IO.println(movieSuggestions.movieTitles().getFirst());
 
         MessageChannel channel = event.getMessage().getChannel().block();
-        movieTitles.forEach(
-                movieTitle -> channel.createMessage(String.format("%d %s", maxLikes, movieTitle))
+        movieSuggestions.movieTitles().forEach(movieTitle ->
+                channel.createMessage(String.format("%d %s", movieSuggestions.likeCount(), movieTitle))
                         .map(Message::getId)
                         .map(Snowflake::asString)
-                        .map(messageId -> {
-                            try {
-                                return movieRepository.fetchImdbIdFromTitle(messageId);
-                            } catch (SQLException e) {
-                                throw new RuntimeException(e);
-                            }
-                        })
                         .subscribe(messageId -> {
                             try {
                                 String imdbId = movieRepository.fetchImdbIdFromTitle(movieTitle);
@@ -290,9 +276,10 @@ public class App {
 
     private void handleUnlikeReaction(ReactionRemoveEvent event) throws SQLException {
         String userId = event.getUserId().asString();
-        String imdbId = null;
-        imdbId = movieRepository.fetchImdbIdFromTitle(event.getMessageId().asString());
-        movieRepository.deleteLike(imdbId, userId);
+        Optional<String> maybeImdbId = movieRepository.fetchImdbIdFromMessageId(event.getMessageId().asString());
+        if (maybeImdbId.isEmpty()) return;
+
+        movieRepository.deleteLike(maybeImdbId.get(), userId);
     }
 
     private void handleMarkMovieAsSeenReaction(ReactionAddEvent event) throws SQLException {

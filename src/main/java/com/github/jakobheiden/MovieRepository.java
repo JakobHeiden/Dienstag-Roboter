@@ -68,27 +68,45 @@ public class MovieRepository {
         }
     }
 
-    public ResultSet fetchLikeCounts(List<String> mentionedUserIds) throws SQLException {
+    public record MovieSuggestions(int likeCount, List<String> movieTitles) {}
+
+    public MovieSuggestions fetchMovieSuggestions(List<String> mentionedUserIds) throws SQLException {
         String placeholders = String.join(",", mentionedUserIds.stream().map(id -> "?").toList());
         String sql = """
-                SELECT m.imdb_id, m.title, COUNT(l.user_id) as like_count
-                FROM movies m
-                JOIN likes l ON m.imdb_id = l.imdb_id
-                WHERE l.user_id IN (%s) AND m.has_been_watched = 0
-                GROUP BY m.imdb_id
-                ORDER BY like_count DESC
-                """.formatted(placeholders);
+            SELECT m.imdb_id, m.title, COUNT(l.user_id) as like_count
+            FROM movies m
+            JOIN likes l ON m.imdb_id = l.imdb_id
+            WHERE l.user_id IN (%s) AND m.has_been_watched = 0
+            GROUP BY m.imdb_id
+            ORDER BY like_count DESC
+            """.formatted(placeholders);
 
-        try (PreparedStatement preparedStatement = dbConnection.prepareStatement(sql)) {
+        try (PreparedStatement stmt = dbConnection.prepareStatement(sql)) {
             for (int i = 0; i < mentionedUserIds.size(); i++) {
-                preparedStatement.setString(i + 1, mentionedUserIds.get(i));
+                stmt.setString(i + 1, mentionedUserIds.get(i));
             }
 
-            return preparedStatement.executeQuery();
+            ResultSet rs = stmt.executeQuery();
+            if (!rs.next()) {
+                return new MovieSuggestions(0, List.of());
+            }
+
+            int maxLikes = rs.getInt("like_count");
+            List<String> titles = new ArrayList<>();
+            titles.add(rs.getString("title"));
+
+            while (rs.next()) {
+                int likes = rs.getInt("like_count");
+                if (likes < maxLikes) break;
+                titles.add(rs.getString("title"));
+            }
+
+            return new MovieSuggestions(maxLikes, titles);
         }
     }
 
     public String fetchImdbIdFromTitle(String movieTitle) throws SQLException {
+        IO.println(movieTitle);
         String findMovieIdSql = "SELECT imdb_id FROM movies WHERE title = ?";
         try (PreparedStatement preparedStatement = dbConnection.prepareStatement(findMovieIdSql)) {
             preparedStatement.setString(1, movieTitle);
