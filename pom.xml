@@ -59,6 +59,14 @@
                 </executions>
             </plugin>
         </plugins>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <excludes>
+                    <exclude>settings.yaml</exclude>
+                </excludes>
+            </resource>
+        </resources>
     </build>
 
     <dependencies>
