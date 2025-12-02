@@ -32,10 +32,9 @@ import java.nio.file.Files;
 
 public class App {
 
-    private static final long movieChannelId = 1083096195825680505L;
-    private static final long testChannelId = 1437574563528704101L;
-    private static final String ownerMention = "<@622111772979101706>";
-    private static final Snowflake botId = Snowflake.of(1196943762283319406L);
+    private final long movieChannelId;
+    private final String ownerMention;
+    private final Snowflake botSnowflake;
     private static final UnicodeEmoji eyesEmoji = UnicodeEmoji.of("\uD83D\uDC40");
     private static final String OMDB_API_URL_TEMPLATE = "https://www.omdbapi.com/?apikey=%s&i=%s";
     private static final Pattern IMDB_ID_PATTERN = Pattern.compile("imdb\\.com/title/(tt\\d+)", Pattern.CASE_INSENSITIVE);
@@ -50,17 +49,12 @@ public class App {
     }
 
     public App() throws SQLException, IOException {
-        String token = System.getenv("DISCORD_BOT_TOKEN");
-        if (token == null) {
-            System.err.println("DISCORD_BOT_TOKEN environment variable not set");
-            System.exit(1);
-        }
-
-        omdbApiKey = System.getenv("OMDB_API_KEY");
-        if (omdbApiKey == null) {
-            System.err.println("OMDB_API_KEY environment variable not set");
-            System.exit(1);
-        }
+        SettingsLoader settingsLoader = new SettingsLoader("settings.yaml");
+        String token = settingsLoader.getDiscordBotToken();
+        omdbApiKey = settingsLoader.getOmdbApiKey();
+        movieChannelId = settingsLoader.getMovieChannelId();
+        ownerMention = String.format("<@%d>", settingsLoader.getOwnerId());
+        botSnowflake = Snowflake.of(settingsLoader.getBotId());
 
         Path dataDir = Path.of("data");
         if (!Files.exists(dataDir)) {
@@ -86,7 +80,7 @@ public class App {
                 });
 
         discordClient.getEventDispatcher().on(MessageCreateEvent.class)
-                .filter(App::isInFilmeChannel)
+                .filter(this::isInFilmeChannel)
                 .filter(App::isImdbLink)
                 .subscribe(event -> {
                     try {
@@ -97,8 +91,8 @@ public class App {
                 }, this::handleException);
 
         discordClient.getEventDispatcher().on(MessageCreateEvent.class)
-                .filter(App::isInFilmeChannel)
-                .filter(App::hasBotMention)
+                .filter(this::isInFilmeChannel)
+                .filter(this::hasBotMention)
                 .subscribe(event -> {
                     try {
                         suggestMovie(event);
@@ -108,7 +102,7 @@ public class App {
                 }, this::handleException);
 
         discordClient.getEventDispatcher().on(ReactionAddEvent.class)
-                .filter(App::isReactionInMovieChannel)
+                .filter(this::isReactionInMovieChannel)
                 .filter(App::isThumbsUp)
                 .map(event -> {
                     try {
@@ -128,7 +122,7 @@ public class App {
                 }, this::handleException);
 
         discordClient.getEventDispatcher().on(ReactionRemoveEvent.class)
-                .filter(App::isReactionInMovieChannel)
+                .filter(this::isReactionInMovieChannel)
                 .filter(App::isThumbsUp)
                 .subscribe(event -> {
                     try {
@@ -139,7 +133,7 @@ public class App {
                 }, this::handleException);
 
         discordClient.getEventDispatcher().on(ReactionAddEvent.class)
-                .filter(App::isReactionInMovieChannel)
+                .filter(this::isReactionInMovieChannel)
                 .filter(App::isEyesEmoji)
                 .subscribe(event -> {
                     try {
@@ -164,14 +158,14 @@ public class App {
         return event.getMessage().getContent().toLowerCase().contains("imdb.com/title/tt");
     }
 
-    private static boolean hasBotMention(MessageCreateEvent event) {
+    private boolean hasBotMention(MessageCreateEvent event) {
         return event.getMessage().getUserMentions().stream()
                 .map(User::getId)
-                .anyMatch(id -> id.equals(botId));
+                .anyMatch(id -> id.equals(botSnowflake));
     }
 
-    private static boolean isInFilmeChannel(MessageCreateEvent event) {
-        return event.getMessage().getChannelId().asLong() == movieChannelId || event.getMessage().getChannelId().asLong() == testChannelId;
+    private boolean isInFilmeChannel(MessageCreateEvent event) {
+        return event.getMessage().getChannelId().asLong() == movieChannelId;
     }
 
     private static boolean isEyesEmoji(ReactionAddEvent event) {
@@ -188,9 +182,8 @@ public class App {
         return false;
     }
 
-    private static boolean isReactionInMovieChannel(ReactionEvent event) {
-        long channelId = event.getChannelId().asLong();
-        return channelId == movieChannelId || channelId == testChannelId;
+    private boolean isReactionInMovieChannel(ReactionEvent event) {
+        return event.getChannelId().asLong() == movieChannelId;
     }
 
     private String fetchMovieTitleFromOmdb(String imdbId) throws IOException, InterruptedException {
@@ -342,7 +335,7 @@ public class App {
         String errorMessage = throwable.getMessage();
         System.err.println(errorMessage);
 
-        discordClient.getChannelById(discord4j.common.util.Snowflake.of(movieChannelId))
+        discordClient.getChannelById(Snowflake.of(movieChannelId))
                 .ofType(MessageChannel.class)
                 .flatMap(channel -> channel.createMessage("⚠️ Error: " + errorMessage + " " + ownerMention))
                 .subscribe();
