@@ -233,16 +233,6 @@ public class App {
         } else {
             IO.println("Successfully persisted movie: " + title + " (" + imdbId + ")");
         }
-
-        replaceImdbLinkWithShareImdbLink(event.getMessage());
-    }
-
-    private static void replaceImdbLinkWithShareImdbLink(Message message) {
-        String messageContent = message.getContent();
-        String newContent = messageContent.replaceAll("(?i)imdb\\.com", "shareimdb.com");
-        if (!newContent.equals(messageContent)) {
-            message.edit().withContentOrNull(newContent).subscribe();
-        }
     }
 
     private void suggestMovie(MessageCreateEvent event) throws SQLException {
