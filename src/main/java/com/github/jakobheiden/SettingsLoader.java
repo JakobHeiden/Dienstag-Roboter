@@ -13,7 +13,6 @@ public class SettingsLoader {
     private final String discordBotToken;
     private final String omdbApiKey;
     private final long movieChannelId;
-    private final long testChannelId;
     private final long ownerId;
     private final long botId;
 
@@ -25,7 +24,6 @@ public class SettingsLoader {
             this.discordBotToken = requireNonNull(data, "discordBotToken");
             this.omdbApiKey = requireNonNull(data, "omdbApiKey");
             this.movieChannelId = requireLong(data, "movieChannelId");
-            this.testChannelId = requireLong(data, "testChannelId");
             this.ownerId = requireLong(data, "ownerId");
             this.botId = requireLong(data, "botId");
         } catch (IOException e) {
