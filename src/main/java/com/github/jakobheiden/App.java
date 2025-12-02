@@ -263,7 +263,7 @@ public class App {
 
         MessageChannel channel = event.getMessage().getChannel().block();
         movieTitles.forEach(
-                movieTitle -> channel.createMessage(movieTitle)
+                movieTitle -> channel.createMessage(String.format("%d %s", maxLikes, movieTitle))
                         .map(Message::getId)
                         .map(Snowflake::asString)
                         .map(messageId -> {
