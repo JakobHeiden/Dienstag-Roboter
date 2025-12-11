@@ -224,7 +224,14 @@ public class App {
         if (imdbId == null) {
             throw new IOException("Failed to extract IMDB ID from message: " + messageId);
         }
-        String title = fetchMovieTitleFromOmdb(imdbId);
+        String title;
+        try {
+            title = fetchMovieTitleFromOmdb(imdbId);
+        } catch (Exception e) {
+            event.getMessage().getChannel().block().createMessage("Failed to extract title from OMDB API: " + e.getMessage() +
+                    "\nMovie not persisted in database.").subscribe();
+            return;
+        }
         boolean isOldMovie = movieRepository.persistMovie(imdbId, title);
         movieRepository.persistMessage(messageId, imdbId);
         String authorId = event.getMessage().getAuthor().get().getId().asString();
