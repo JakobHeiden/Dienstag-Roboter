@@ -38,7 +38,7 @@ public class App {
     private static final UnicodeEmoji eyesEmoji = UnicodeEmoji.of("\uD83D\uDC40");
     private static final UnicodeEmoji thumbsUpEmoji = UnicodeEmoji.of("\uD83D\uDC4D");
     private static final String OMDB_API_URL_TEMPLATE = "https://www.omdbapi.com/?apikey=%s&i=%s";
-    private static final Pattern IMDB_ID_PATTERN = Pattern.compile("imdb\\.com/title/(tt\\d+)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern IMDB_ID_PATTERN = Pattern.compile("imdb\\.com/(?:[a-z]{2}/)?title/(tt\\d+)", Pattern.CASE_INSENSITIVE);
 
     private final String omdbApiKey;
     private final HttpClient httpClient = HttpClient.newHttpClient();
@@ -148,7 +148,7 @@ public class App {
     }
 
     private static boolean isImdbLink(MessageCreateEvent event) {
-        return event.getMessage().getContent().toLowerCase().contains("imdb.com/title/tt");
+        return IMDB_ID_PATTERN.matcher(event.getMessage().getContent()).find();
     }
 
     private boolean hasBotMention(MessageCreateEvent event) {
