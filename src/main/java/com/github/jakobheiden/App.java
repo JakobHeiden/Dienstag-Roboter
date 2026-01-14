@@ -14,6 +14,7 @@ import discord4j.core.object.entity.channel.MessageChannel;
 import discord4j.core.object.emoji.UnicodeEmoji;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Hooks;
+import reactor.core.publisher.Mono;
 
 import java.io.IOException;
 import java.net.URI;
@@ -21,7 +22,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.sql.*;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
@@ -83,67 +83,58 @@ public class App {
         discordClient.getEventDispatcher().on(MessageCreateEvent.class)
                 .filter(this::isInFilmeChannel)
                 .filter(App::isImdbLink)
-                .subscribe(event -> {
-                    try {
-                        addMovie(event);
-                    } catch (Exception e) {
-                        throw new RuntimeException(e);
-                    }
-                }, this::handleException);
+                .flatMap(event -> Mono.fromCallable(() -> {
+                    addMovie(event);
+                    return null;
+                }))
+                .subscribe(null, this::handleException);
 
         discordClient.getEventDispatcher().on(MessageCreateEvent.class)
                 .filter(this::isInFilmeChannel)
                 .filter(this::hasBotMention)
-                .subscribe(event -> {
-                    try {
-                        suggestMovie(event);
-                    } catch (SQLException e) {
-                        throw new RuntimeException(e);
-                    }
-                }, this::handleException);
+                .flatMap(event -> Mono.fromCallable(() -> {
+                    suggestMovie(event);
+                    return null;
+                }))
+                .subscribe(null, this::handleException);
 
         discordClient.getEventDispatcher().on(ReactionAddEvent.class)
                 .filter(this::isReactionInMovieChannel)
                 .filter(event -> !event.getMember().get().isBot())
                 .filter(App::isThumbsUp)
-                .map(event -> {
-                    try {
-                        return fetchUserIdAndImdbId(event);
-                    } catch (SQLException e) {
-                        throw new RuntimeException(e);
-                    }
-                })
-                .filter(Optional::isPresent)
-                .map(Optional::get)
-                .subscribe(userIdAndImdbId -> {
-                    try {
+                .flatMap(event -> Mono.fromCallable(() -> fetchUserIdAndImdbId(event))
+                        .flatMap(Mono::justOrEmpty))
+                .flatMap(userIdAndImdbId ->
+                    Mono.fromCallable(() -> {
                         handleLikeReaction(userIdAndImdbId.userId, userIdAndImdbId.imdbId);
-                    } catch (SQLException e) {
-                        throw new RuntimeException(e);
-                    }
-                }, this::handleException);
+                        return null;
+                    })
+                )
+                .subscribe(null, this::handleException);
 
         discordClient.getEventDispatcher().on(ReactionRemoveEvent.class)
                 .filter(this::isReactionInMovieChannel)
                 .filter(App::isThumbsUp)
-                .subscribe(event -> {
-                    try {
-                        handleUnlikeReaction(event);
-                    } catch (SQLException e) {
-                        throw new RuntimeException(e);
-                    }
-                }, this::handleException);
+                .flatMap(event -> Mono.fromCallable(() -> {
+                    handleUnlikeReaction(event);
+                    return null;
+                }))
+                .subscribe(null, this::handleException);
 
         discordClient.getEventDispatcher().on(ReactionAddEvent.class)
                 .filter(this::isReactionInMovieChannel)
                 .filter(App::isEyesEmoji)
-                .subscribe(event -> {
-                    try {
-                        handleMarkMovieAsSeenReaction(event);
-                    } catch (SQLException e) {
-                        throw new RuntimeException(e);
-                    }
-                }, this::handleException);
+                .flatMap(event ->
+                    Mono.fromCallable(() -> movieRepository.fetchImdbIdFromMessageId(event.getMessageId().asString()))
+                        .flatMap(Mono::justOrEmpty)
+                )
+                .flatMap(imdbId ->
+                    Mono.fromCallable(() -> {
+                        handleMarkMovieAsSeenReaction(imdbId);
+                        return null;
+                    })
+                )
+                .subscribe(null, this::handleException);
     }
 
     public record UserIdAndImdbId(String userId, String imdbId) {
@@ -269,15 +260,15 @@ public class App {
                 channel.createMessage(String.format("%d %s", movieSuggestions.likeCount(), movieTitle))
                         .map(Message::getId)
                         .map(Snowflake::asString)
-                        .subscribe(messageId -> {
-                            try {
+                        .flatMap(messageId ->
+                            Mono.fromCallable(() -> {
                                 String imdbId = movieRepository.fetchImdbIdFromTitle(movieTitle);
                                 movieRepository.persistMessage(messageId, imdbId);
                                 IO.println("Persisted movie message: " + messageId + " (" + movieTitle + ")");
-                            } catch (SQLException e) {
-                                throw new RuntimeException(e);
-                            }
-                        }, this::handleException));
+                                return null;
+                            })
+                        )
+                        .subscribe(null, this::handleException));
     }
 
     private void handleLikeReaction(String userId, String imdbId) throws SQLException {
@@ -292,13 +283,8 @@ public class App {
         movieRepository.deleteLike(maybeImdbId.get(), userId);
     }
 
-    private void handleMarkMovieAsSeenReaction(ReactionAddEvent event) throws SQLException {
-        String messageId = event.getMessageId().asString();
-        String imdbId = null;
-            imdbId = movieRepository.fetchImdbIdFromTitle(messageId);
-        boolean isAlreadyMarkedAsSeen = false;
-            isAlreadyMarkedAsSeen = movieRepository.markMovieAsSeen(imdbId);
-
+    private void handleMarkMovieAsSeenReaction(String imdbId) throws SQLException {
+        boolean isAlreadyMarkedAsSeen = movieRepository.markMovieAsSeen(imdbId);
         if (isAlreadyMarkedAsSeen) {
             IO.println("Movie already marked as seen: " + imdbId);
             return;
@@ -306,12 +292,7 @@ public class App {
 
         IO.println("Movie marked as seen: " + imdbId);
 
-        List<String> messageIds = null;
-        try {
-            messageIds = movieRepository.fetchMovieIds(imdbId);
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        }
+        List<String> messageIds = movieRepository.fetchMovieIds(imdbId);
         Flux.fromIterable(messageIds)
                 .map(Snowflake::of)
                 .flatMap(snowflake -> discordClient.getMessageById(Snowflake.of(movieChannelId), snowflake))
