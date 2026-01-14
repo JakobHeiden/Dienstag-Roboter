@@ -70,11 +70,11 @@ public class App {
                 .login()
                 .block();
         Hooks.onErrorDropped(throwable -> handleException(throwable));
-        configureEventHandlers(token);
+        configureEventHandlers();
         discordClient.onDisconnect().block();
     }
 
-    private void configureEventHandlers(String token) {
+    private void configureEventHandlers() {
         discordClient.getEventDispatcher().on(ReadyEvent.class)
                 .subscribe(event -> {
                     IO.println("Bot logged in as " + event.getSelf().getUsername());
@@ -137,7 +137,7 @@ public class App {
                 .subscribe(null, this::handleException);
     }
 
-    public record UserIdAndImdbId(String userId, String imdbId) {
+    private record UserIdAndImdbId(String userId, String imdbId) {
     }
 
     private Optional<UserIdAndImdbId> fetchUserIdAndImdbId(ReactionAddEvent event) throws SQLException {
@@ -208,7 +208,7 @@ public class App {
         return null;
     }
 
-    private void addMovie(MessageCreateEvent event) throws IOException, InterruptedException, SQLException {
+    private void addMovie(MessageCreateEvent event) throws IOException, SQLException {
         String messageContent = event.getMessage().getContent();
         String messageId = event.getMessage().getId().asString();
         String imdbId = extractImdbId(messageContent);
