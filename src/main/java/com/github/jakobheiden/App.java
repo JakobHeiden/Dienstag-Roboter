@@ -245,31 +245,33 @@ public class App {
 
         MovieRepository.MovieSuggestions movieSuggestions = movieRepository.fetchMovieSuggestions(mentionedUserIds);
 
-        if (movieSuggestions.likeCount() == 0) {
+        if (movieSuggestions.maxTaggedLikeCount() == 0) {
             IO.println("No movies to suggest");
             event.getMessage().getChannel().subscribe(messageChannel ->
                     messageChannel.createMessage("No movies to suggest").subscribe());
             return;
         }
 
-        Collections.shuffle(movieSuggestions.movieTitles());
         IO.println(movieSuggestions.movieTitles().getFirst());
 
         MessageChannel channel = event.getMessage().getChannel().block();
-        movieSuggestions.movieTitles().forEach(movieTitle ->
-                channel.createMessage(String.format("%d %s", movieSuggestions.likeCount(), movieTitle))
-                        .map(Message::getId)
-                        .map(Snowflake::asString)
-                        .flatMap(messageId ->
+        for (int i = 0; i < movieSuggestions.movieTitles().size(); i++) {
+            String movieTitle = movieSuggestions.movieTitles().get(i);
+            channel.createMessage(String.format("%d/%d %s", movieSuggestions.maxTaggedLikeCount(),
+                            movieSuggestions.allLikeCounts().get(i),
+                            movieTitle))
+                    .map(Message::getId)
+                    .map(Snowflake::asString)
+                    .flatMap(messageId ->
                             Mono.fromCallable(() -> {
                                 String imdbId = movieRepository.fetchImdbIdFromTitle(movieTitle);
                                 movieRepository.persistMessage(messageId, imdbId);
                                 IO.println("Persisted movie message: " + messageId + " (" + movieTitle + ")");
                                 return null;
-                            })
-                        )
-                        .subscribe(null, this::handleException));
-    }
+                            }))
+                    .subscribe(null, this::handleException);
+        }
+   }
 
     private void handleLikeReaction(String userId, String imdbId) throws SQLException {
         movieRepository.persistLike(userId, imdbId);

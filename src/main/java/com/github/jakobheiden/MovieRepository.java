@@ -68,17 +68,22 @@ public class MovieRepository {
         }
     }
 
-    public record MovieSuggestions(int likeCount, List<String> movieTitles) {}
+    public record MovieSuggestions(int maxTaggedLikeCount, List<Integer> allLikeCounts, List<String> movieTitles) {}
 
     public MovieSuggestions fetchMovieSuggestions(List<String> mentionedUserIds) throws SQLException {
         String placeholders = String.join(",", mentionedUserIds.stream().map(id -> "?").toList());
         String sql = """
-            SELECT m.imdb_id, m.title, COUNT(l.user_id) as like_count
-            FROM movies m
-            JOIN likes l ON m.imdb_id = l.imdb_id
-            WHERE l.user_id IN (%s) AND m.has_been_watched = 0
-            GROUP BY m.imdb_id
-            ORDER BY like_count DESC
+                SELECT\s
+                    m.imdb_id,\s
+                    m.title,\s
+                    COUNT(CASE WHEN l.user_id IN (%s) THEN 1 END) as tagged_like_count,
+                    COUNT(l.user_id) as all_like_count
+                FROM movies m
+                JOIN likes l ON m.imdb_id = l.imdb_id
+                WHERE m.has_been_watched = 0
+                GROUP BY m.imdb_id
+                HAVING tagged_like_count > 0
+                ORDER BY tagged_like_count DESC, all_like_count ASC
             """.formatted(placeholders);
 
         try (PreparedStatement stmt = dbConnection.prepareStatement(sql)) {
@@ -87,21 +92,25 @@ public class MovieRepository {
             }
 
             ResultSet rs = stmt.executeQuery();
+
             if (!rs.next()) {
-                return new MovieSuggestions(0, List.of());
+                return new MovieSuggestions(0, List.of(), List.of());
             }
 
-            int maxLikes = rs.getInt("like_count");
+            int maxTaggedLikeCount = rs.getInt("tagged_like_count");
             List<String> titles = new ArrayList<>();
+            List<Integer> allLikeCounts = new ArrayList<>();
             titles.add(rs.getString("title"));
+            allLikeCounts.add(rs.getInt("all_like_count"));
 
             while (rs.next()) {
-                int likes = rs.getInt("like_count");
-                if (likes < maxLikes) break;
+                int taggedLikeCount = rs.getInt("tagged_like_count");
+                if (taggedLikeCount < maxTaggedLikeCount) break;
                 titles.add(rs.getString("title"));
+                allLikeCounts.add(rs.getInt("all_like_count"));
             }
 
-            return new MovieSuggestions(maxLikes, titles);
+            return new MovieSuggestions(maxTaggedLikeCount, allLikeCounts, titles);
         }
     }
 
