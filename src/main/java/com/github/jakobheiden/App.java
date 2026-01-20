@@ -22,7 +22,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.sql.*;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -75,11 +74,13 @@ public class App {
     }
 
     private void configureEventHandlers() {
+        // on login
         discordClient.getEventDispatcher().on(ReadyEvent.class)
                 .subscribe(event -> {
                     IO.println("Bot logged in as " + event.getSelf().getUsername());
                 });
 
+        // persist a movie
         discordClient.getEventDispatcher().on(MessageCreateEvent.class)
                 .filter(this::isInFilmeChannel)
                 .filter(App::isImdbLink)
@@ -89,6 +90,7 @@ public class App {
                 }))
                 .subscribe(null, this::handleException);
 
+        // suggest movies
         discordClient.getEventDispatcher().on(MessageCreateEvent.class)
                 .filter(this::isInFilmeChannel)
                 .filter(this::hasBotMention)
@@ -98,6 +100,7 @@ public class App {
                 }))
                 .subscribe(null, this::handleException);
 
+        // leave a like
         discordClient.getEventDispatcher().on(ReactionAddEvent.class)
                 .filter(this::isReactionInMovieChannel)
                 .filter(event -> !event.getMember().get().isBot())
@@ -112,6 +115,7 @@ public class App {
                 )
                 .subscribe(null, this::handleException);
 
+        // remove a like
         discordClient.getEventDispatcher().on(ReactionRemoveEvent.class)
                 .filter(this::isReactionInMovieChannel)
                 .filter(App::isThumbsUp)
@@ -121,6 +125,7 @@ public class App {
                 }))
                 .subscribe(null, this::handleException);
 
+        // mark as seen
         discordClient.getEventDispatcher().on(ReactionAddEvent.class)
                 .filter(this::isReactionInMovieChannel)
                 .filter(App::isEyesEmoji)
