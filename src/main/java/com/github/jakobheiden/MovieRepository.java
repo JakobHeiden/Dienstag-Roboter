@@ -70,8 +70,8 @@ public class MovieRepository {
         }
     }
 
-    public record MovieSuggestions(int maxTaggedLikeCount, List<Integer> allLikeCounts, List<String> titles,
-                                   List<String> years, List<String> imdbIds) {}
+    public record MovieSuggestions(int maxTaggedLikeCount, List<Integer> allLikeCounts, List<String> imdbIds, List<String> titles,
+                                   List<String> years) {}
 
     public MovieSuggestions fetchMovieSuggestions(List<String> mentionedUserIds) throws SQLException {
         String placeholders = String.join(",", mentionedUserIds.stream().map(id -> "?").toList());
@@ -108,13 +108,13 @@ public class MovieRepository {
             List<Integer> allLikeCounts = new ArrayList<>();
             do {
                 if (rs.getInt("tagged_like_count") < maxTaggedLikeCount) break;
+                imdbIds.add(rs.getString("imdb_id"));
                 titles.add(rs.getString("title"));
                 years.add(rs.getString("year"));
-                imdbIds.add(rs.getString("imdb_id"));
                 allLikeCounts.add(rs.getInt("all_like_count"));
             } while (rs.next());
 
-            return new MovieSuggestions(maxTaggedLikeCount, allLikeCounts, titles, years, imdbIds);
+            return new MovieSuggestions(maxTaggedLikeCount, allLikeCounts, imdbIds, titles, years);
         }
     }
 
