@@ -1,0 +1,13 @@
+[Unit]
+Description=Dienstag Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/dienstag
+ExecStart=/usr/bin/java -jar Dienstag-1.0-SNAPSHOT.jar
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
