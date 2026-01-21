@@ -26,6 +26,7 @@ public class MovieRepository {
                     CREATE TABLE IF NOT EXISTS movies (
                         imdb_id TEXT PRIMARY KEY,
                         title TEXT,
+                        year TEXT,
                         has_been_watched BOOLEAN DEFAULT 0
                     )
                     """);
@@ -49,11 +50,12 @@ public class MovieRepository {
         }
     }
 
-    public boolean persistMovie(String imdbId, String title) throws SQLException {
-        String movieSql = "INSERT OR IGNORE INTO movies (imdb_id, title) VALUES (?, ?)";
+    public boolean persistMovie(String imdbId, String title, String year) throws SQLException {
+        String movieSql = "INSERT OR IGNORE INTO movies (imdb_id, title, year) VALUES (?, ?, ?)";
         try (PreparedStatement stmt = dbConnection.prepareStatement(movieSql)) {
             stmt.setString(1, imdbId);
             stmt.setString(2, title);
+            stmt.setString(3, year);
             int rowsAffected = stmt.executeUpdate();
             return rowsAffected == 0;
         }
@@ -68,7 +70,8 @@ public class MovieRepository {
         }
     }
 
-    public record MovieSuggestions(int maxTaggedLikeCount, List<Integer> allLikeCounts, List<String> movieTitles) {}
+    public record MovieSuggestions(int maxTaggedLikeCount, List<Integer> allLikeCounts, List<String> titles,
+                                   List<String> years, List<String> imdbIds) {}
 
     public MovieSuggestions fetchMovieSuggestions(List<String> mentionedUserIds) throws SQLException {
         String placeholders = String.join(",", mentionedUserIds.stream().map(id -> "?").toList());
@@ -76,6 +79,7 @@ public class MovieRepository {
                 SELECT\s
                     m.imdb_id,\s
                     m.title,\s
+                    m.year,
                     COUNT(CASE WHEN l.user_id IN (%s) THEN 1 END) as tagged_like_count,
                     COUNT(l.user_id) as all_like_count
                 FROM movies m
@@ -94,35 +98,23 @@ public class MovieRepository {
             ResultSet rs = stmt.executeQuery();
 
             if (!rs.next()) {
-                return new MovieSuggestions(0, List.of(), List.of());
+                return new MovieSuggestions(0, List.of(), List.of(), List.of(), List.of());
             }
 
             int maxTaggedLikeCount = rs.getInt("tagged_like_count");
             List<String> titles = new ArrayList<>();
+            List<String> years = new ArrayList<>();
+            List<String> imdbIds = new ArrayList<>();
             List<Integer> allLikeCounts = new ArrayList<>();
-            titles.add(rs.getString("title"));
-            allLikeCounts.add(rs.getInt("all_like_count"));
-
-            while (rs.next()) {
-                int taggedLikeCount = rs.getInt("tagged_like_count");
-                if (taggedLikeCount < maxTaggedLikeCount) break;
+            do {
+                if (rs.getInt("tagged_like_count") < maxTaggedLikeCount) break;
                 titles.add(rs.getString("title"));
+                years.add(rs.getString("year"));
+                imdbIds.add(rs.getString("imdb_id"));
                 allLikeCounts.add(rs.getInt("all_like_count"));
-            }
+            } while (rs.next());
 
-            return new MovieSuggestions(maxTaggedLikeCount, allLikeCounts, titles);
-        }
-    }
-
-    public String fetchImdbIdFromTitle(String movieTitle) throws SQLException {
-        IO.println(movieTitle);
-        String findMovieIdSql = "SELECT imdb_id FROM movies WHERE title = ?";
-        try (PreparedStatement preparedStatement = dbConnection.prepareStatement(findMovieIdSql)) {
-            preparedStatement.setString(1, movieTitle);
-            ResultSet resultSet = preparedStatement.executeQuery();
-            if (!resultSet.next()) throw new SQLException("Movie not found in database: " + movieTitle);
-
-            return resultSet.getString("imdb_id");
+            return new MovieSuggestions(maxTaggedLikeCount, allLikeCounts, titles, years, imdbIds);
         }
     }
 
@@ -179,7 +171,7 @@ public class MovieRepository {
         }
     }
 
-    public List<String> fetchMovieIds(String imdbId) throws SQLException {
+    public List<String> fetchMessageIds(String imdbId) throws SQLException {
         String findMessagesForMovieSql = "SELECT message_id FROM messages WHERE imdb_id = ?";
         List<String> messageIds = new ArrayList<>();
         try (PreparedStatement preparedStatement = dbConnection.prepareStatement(findMessagesForMovieSql)) {

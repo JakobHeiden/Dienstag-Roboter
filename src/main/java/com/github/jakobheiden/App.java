@@ -68,7 +68,7 @@ public class App {
                 .build()
                 .login()
                 .block();
-        Hooks.onErrorDropped(throwable -> handleException(throwable));
+        Hooks.onErrorDropped(this::handleException);
         configureEventHandlers();
         discordClient.onDisconnect().block();
     }
@@ -95,7 +95,7 @@ public class App {
                 .filter(this::isInFilmeChannel)
                 .filter(this::hasBotMention)
                 .flatMap(event -> Mono.fromCallable(() -> {
-                    suggestMovie(event);
+                    suggestMovies(event);
                     return null;
                 }))
                 .subscribe(null, this::handleException);
@@ -184,7 +184,7 @@ public class App {
         return event.getChannelId().asLong() == movieChannelId;
     }
 
-    private String fetchMovieTitleFromOmdb(String imdbId) throws IOException, InterruptedException {
+    private String[] fetchMovieTitleAndYearFromOmdb(String imdbId) throws IOException, InterruptedException {
         String url = String.format(OMDB_API_URL_TEMPLATE, omdbApiKey, imdbId);
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -202,7 +202,7 @@ public class App {
             throw new RuntimeException(error);
         }
 
-        return json.get("Title").getAsString();
+        return new String[]{json.get("Title").getAsString(), json.get("Year").getAsString()};
     }
 
     private static String extractImdbId(String message) {
@@ -220,28 +220,28 @@ public class App {
         if (imdbId == null) {
             throw new IOException("Failed to extract IMDB ID from message: " + messageId);
         }
-        String title;
+        String[] titleAndYear;
         try {
-            title = fetchMovieTitleFromOmdb(imdbId);
+            titleAndYear = fetchMovieTitleAndYearFromOmdb(imdbId);
         } catch (Exception e) {
             event.getMessage().getChannel().block().createMessage("Failed to extract title from OMDB API: " + e.getMessage() +
                     "\nMovie not persisted in database.").subscribe();
             return;
         }
-        boolean isOldMovie = movieRepository.persistMovie(imdbId, title);
+        boolean isOldMovie = movieRepository.persistMovie(imdbId, titleAndYear[0], titleAndYear[1]);
         movieRepository.persistMessage(messageId, imdbId);
         String authorId = event.getMessage().getAuthor().get().getId().asString();
         movieRepository.persistLike(authorId, imdbId);
 
         if (isOldMovie) {
-            IO.println("Movie already in database: " + title + " (" + imdbId + ")");
+            IO.println("Movie already in database: " + titleAndYear[0] + " (" + imdbId + ")");
         } else {
-            IO.println("Successfully persisted movie: " + title + " (" + imdbId + ")");
+            IO.println("Successfully persisted movie: " + titleAndYear[0] + " (" + imdbId + ")");
         }
         event.getMessage().addReaction(thumbsUpEmoji).subscribe();
     }
 
-    private void suggestMovie(MessageCreateEvent event) throws SQLException {
+    private void suggestMovies(MessageCreateEvent event) throws SQLException {
         List<String> mentionedUserIds = event.getMessage().getUserMentions()
                 .stream().filter(user -> !user.isBot())
                 .map(user -> user.getId().asString()).toList();
@@ -257,21 +257,23 @@ public class App {
             return;
         }
 
-        IO.println(movieSuggestions.movieTitles().getFirst());
+        IO.println(String.format("Suggesting %d titles", movieSuggestions.titles().size()));
 
         MessageChannel channel = event.getMessage().getChannel().block();
-        for (int i = 0; i < movieSuggestions.movieTitles().size(); i++) {
-            String movieTitle = movieSuggestions.movieTitles().get(i);
-            channel.createMessage(String.format("%d/%d %s", movieSuggestions.maxTaggedLikeCount(),
+        for (int i = 0; i < movieSuggestions.titles().size(); i++) {
+            String imdbId = movieSuggestions.imdbIds().get(i);
+            String title = movieSuggestions.titles().get(i);
+            String year = movieSuggestions.years().get(i);
+            channel.createMessage(String.format("%d/%d %s%s", movieSuggestions.maxTaggedLikeCount(),
                             movieSuggestions.allLikeCounts().get(i),
-                            movieTitle))
+                            title,
+                            year != null ? " (" + year + ")" : ""))
                     .map(Message::getId)
                     .map(Snowflake::asString)
                     .flatMap(messageId ->
                             Mono.fromCallable(() -> {
-                                String imdbId = movieRepository.fetchImdbIdFromTitle(movieTitle);
                                 movieRepository.persistMessage(messageId, imdbId);
-                                IO.println("Persisted movie message: " + messageId + " (" + movieTitle + ")");
+                                IO.println("Persisted movie message: " + messageId + " (" + imdbId + ")");
                                 return null;
                             }))
                     .subscribe(null, this::handleException);
@@ -299,11 +301,12 @@ public class App {
 
         IO.println("Movie marked as seen: " + imdbId);
 
-        List<String> messageIds = movieRepository.fetchMovieIds(imdbId);
+        List<String> messageIds = movieRepository.fetchMessageIds(imdbId);
         Flux.fromIterable(messageIds)
                 .map(Snowflake::of)
                 .flatMap(snowflake -> discordClient.getMessageById(Snowflake.of(movieChannelId), snowflake))
-                .subscribe(message -> message.addReaction(eyesEmoji).subscribe());
+                .flatMap(message -> message.addReaction(eyesEmoji))
+                .subscribe(null, this::handleException);
     }
 
     public void handleException(Throwable throwable) {
