@@ -36,6 +36,7 @@ public class App {
     private final Snowflake botSnowflake;
     private static final UnicodeEmoji eyesEmoji = UnicodeEmoji.of("\uD83D\uDC40");
     private static final UnicodeEmoji thumbsUpEmoji = UnicodeEmoji.of("\uD83D\uDC4D");
+    private static final UnicodeEmoji resetEmoji = UnicodeEmoji.of("\uD83D\uDD04");
     private static final String OMDB_API_URL_TEMPLATE = "https://www.omdbapi.com/?apikey=%s&i=%s";
     private static final Pattern IMDB_ID_PATTERN = Pattern.compile("imdb\\.com/(?:[a-z]{2}/)?title/(tt\\d+)", Pattern.CASE_INSENSITIVE);
 
@@ -140,6 +141,22 @@ public class App {
                     })
                 )
                 .subscribe(null, this::handleException);
+
+        // mark as not seen
+        discordClient.getEventDispatcher().on(ReactionAddEvent.class)
+                .filter(this::isReactionInMovieChannel)
+                .filter(App::isResetEmoji)
+                .flatMap(event ->
+                    Mono.fromCallable(() -> movieRepository.fetchImdbIdFromMessageId(event.getMessageId().asString()))
+                        .flatMap(Mono::justOrEmpty)
+                )
+                .flatMap(imdbId ->
+                    Mono.fromCallable(() -> {
+                        handleMarkMovieAsNotSeenReaction(imdbId);
+                        return null;
+                    })
+                )
+                .subscribe(null, this::handleException);
     }
 
     private record UserIdAndImdbId(String userId, String imdbId) {
@@ -168,6 +185,10 @@ public class App {
 
     private static boolean isEyesEmoji(ReactionAddEvent event) {
         return event.getEmoji().equals(eyesEmoji);
+    }
+
+    private static boolean isResetEmoji(ReactionAddEvent event) {
+        return event.getEmoji().equals(resetEmoji);
     }
 
     private static boolean isThumbsUp(ReactionBaseEmojiEvent event) {
@@ -306,6 +327,23 @@ public class App {
                 .map(Snowflake::of)
                 .flatMap(snowflake -> discordClient.getMessageById(Snowflake.of(movieChannelId), snowflake))
                 .flatMap(message -> message.addReaction(eyesEmoji))
+                .subscribe(null, this::handleException);
+    }
+
+    private void handleMarkMovieAsNotSeenReaction(String imdbId) throws SQLException {
+        boolean isAlreadyMarkedAsNotSeen = movieRepository.markMovieAsNotSeen(imdbId);
+        if (isAlreadyMarkedAsNotSeen) {
+            IO.println("Movie already marked as not seen: " + imdbId);
+            return;
+        }
+
+        IO.println("Movie marked as not seen: " + imdbId);
+
+        List<String> messageIds = movieRepository.fetchMessageIds(imdbId);
+        Flux.fromIterable(messageIds)
+                .map(Snowflake::of)
+                .flatMap(snowflake -> discordClient.getMessageById(Snowflake.of(movieChannelId), snowflake))
+                .flatMap(message -> message.removeReaction(eyesEmoji, botSnowflake))
                 .subscribe(null, this::handleException);
     }
 

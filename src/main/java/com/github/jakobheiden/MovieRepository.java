@@ -171,6 +171,14 @@ public class MovieRepository {
         }
     }
 
+    public boolean markMovieAsNotSeen(String imdbId) throws SQLException {
+        String updateSql = "UPDATE movies SET has_been_watched = 0 WHERE imdb_id = ? AND has_been_watched = 1";
+        try (PreparedStatement preparedStatement = dbConnection.prepareStatement(updateSql)) {
+            preparedStatement.setString(1, imdbId);
+            return preparedStatement.executeUpdate() == 0;
+        }
+    }
+
     public List<String> fetchMessageIds(String imdbId) throws SQLException {
         String findMessagesForMovieSql = "SELECT message_id FROM messages WHERE imdb_id = ?";
         List<String> messageIds = new ArrayList<>();
