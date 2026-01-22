@@ -12,6 +12,8 @@ import discord4j.core.object.entity.Message;
 import discord4j.core.object.entity.User;
 import discord4j.core.object.entity.channel.MessageChannel;
 import discord4j.core.object.emoji.UnicodeEmoji;
+import discord4j.rest.http.client.ClientException;
+import io.netty.handler.codec.http.HttpResponseStatus;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Hooks;
 import reactor.core.publisher.Mono;
@@ -350,6 +352,11 @@ public class App {
     public void handleException(Throwable throwable) {
         String errorMessage = throwable.getMessage();
         System.err.println(errorMessage);
+
+        if (throwable instanceof ClientException) {
+            if (((ClientException) throwable).getStatus().equals(HttpResponseStatus.NOT_FOUND))
+                return;
+        }
 
         discordClient.getChannelById(Snowflake.of(movieChannelId))
                 .ofType(MessageChannel.class)
